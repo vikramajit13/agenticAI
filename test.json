@@ -1,0 +1,41 @@
+{
+  "summary": "Generated 2 rough user stories for Product managers, internal analysts, covering 3 key feature areas.",
+  "extracted": {
+    "actors": ["Product managers", "internal analysts"],
+    "goals": [
+      "Turn raw requirement notes into rough user stories and acceptance criteria."
+    ],
+    "features": [
+      "Users can paste long-form discovery notes.",
+      "Identify actors, goals, key features, and constraints.",
+      "Generate rough user stories with acceptance criteria."
+    ],
+    "constraints": [
+      "Use Ollama with llama3.1:8b locally.",
+      "Responses should be concise and useful for backlog grooming."
+    ]
+  },
+  "stories": [
+    {
+      "story": "As a Product manager, I want to turn raw requirement notes into rough user stories and acceptance criteria, so that we can prioritize features effectively.",
+      "acceptance_criteria": [
+        "Given the product manager has pasted raw requirement notes into Ollama.",
+        "Given a valid request, when processing runs, then When they navigate to the result page, then the system generates at least one rough user story with acceptance criteria."
+      ]
+    },
+    {
+      "story": "As an internal analyst, I want to identify key features and constraints in long-form discovery notes, so that I have the right information for backlog grooming.",
+      "acceptance_criteria": [
+        "Given the system is running on Ollama with llama3.1:8b locally.",
+        "Given a valid request, when processing runs, then When the internal analyst pastes a large amount of text into Ollama, then the response is concise and useful."
+      ]
+    }
+  ],
+  "normalized_text": "Actors:\nProduct managers and internal analysts\n\nGoal:\nTurn raw requirement notes into rough user stories and acceptance criteria.\n\nFeatures:\nUsers can paste long-form discovery notes.\nThe system should identify actors, goals, key features, and constraints.\nThe system should generate rough user stories with acceptance criteria.\n\nConstraints:\nUse Ollama with llama3.1:8b locally.\nResponses should be concise and useful for backlog grooming.",
+  "sections": [
+    "Actors:\nProduct managers and internal analysts",
+    "Goal:\nTurn raw requirement notes into rough user stories and acceptance criteria.",
+    "Features:\nUsers can paste long-form discovery notes.\nThe system should identify actors, goals, key features, and constraints.\nThe system should generate rough user stories with acceptance criteria.",
+    "Constraints:\nUse Ollama with llama3.1:8b locally.\nResponses should be concise and useful for backlog grooming."
+  ]
+}

@@ -1,0 +1,3 @@
+{
+  "text": "Actors:\nProduct managers and internal analysts\n\nGoal:\nTurn raw requirement notes into rough user stories and acceptance criteria.\n\nFeatures:\nUsers can paste long-form discovery notes.\nThe system should identify actors, goals, key features, and constraints.\nThe system should generate rough user stories with acceptance criteria.\n\nConstraints:\nUse Ollama with llama3.1:8b locally.\nResponses should be concise and useful for backlog grooming."
+}
