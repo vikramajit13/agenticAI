@@ -3,6 +3,8 @@
 from pydantic import BaseModel
 from pydantic import Field
 
+from app.domain.models import Epic
+
 
 class ExtractionSummary(BaseModel):
     actors: list[str] = Field(default_factory=list)
@@ -19,7 +21,7 @@ class StoryDraft(BaseModel):
 class RequirementsResponse(BaseModel):
     summary: str
     extracted: ExtractionSummary
-    stories: list[StoryDraft] = Field(default_factory=list)
+    epics: list[Epic] = Field(default_factory=list)
     normalized_text: str
     sections: list[str] = Field(default_factory=list)
 

@@ -5,14 +5,23 @@ import re
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
+from pydantic import ValidationError
 
 from app.config import Settings
+from app.domain.models import AcceptanceCriterion
+from app.domain.models import Dependency
+from app.domain.models import Epic
+from app.domain.models import Story
 from app.logging import get_logger
 from app.schemas.responses import ExtractionSummary
-from app.schemas.responses import StoryDraft
 
 
 logger = get_logger(__name__)
+
+
+class BacklogGeneration(BaseModel):
+    epics: list[Epic]
 
 
 class LLMService:
@@ -32,76 +41,44 @@ class LLMService:
         )
         result = await self._generate_json(prompt)
         return {
-            "actors": self._ensure_string_list(result.get("actors")),
-            "goals": self._ensure_string_list(result.get("goals")),
-            "features": self._ensure_string_list(result.get("features")),
-            "constraints": self._ensure_string_list(result.get("constraints")),
+            "actors": self._clean_text_items(self._ensure_string_list(result.get("actors"))),
+            "goals": self._clean_text_items(self._ensure_string_list(result.get("goals"))),
+            "features": self._clean_text_items(self._ensure_string_list(result.get("features"))),
+            "constraints": self._clean_text_items(self._ensure_string_list(result.get("constraints"))),
         }
 
-    async def generate_stories(self, extracted: dict[str, list[str]]) -> list[str]:
+    async def generate_backlog(self, extracted: dict[str, list[str]]) -> list[Epic]:
         prompt = (
-            "You generate backlog-ready rough user stories from extracted requirement data.\n"
-            "Return strict JSON with one key: stories.\n"
-            "stories must be an array of strings in the format "
-            "'As a <actor>, I want <goal>, so that <benefit>'.\n"
-            "Every story must start with 'As a' or 'As an'.\n"
-            "Write 2 to 5 stories.\n"
-            "Prefer explicit actors from the input. Infer a short benefit when needed.\n"
-            "Do not return fragments, titles, bullets, or feature names by themselves.\n"
+            "You generate backlog-ready epics, user stories, acceptance criteria, and dependencies.\n"
+            "Return strict JSON with exactly one top-level key: epics.\n"
+            "epics must be an array of objects with keys: title, summary, stories.\n"
+            "stories must be an array of objects with keys: title, story, acceptance_criteria, dependencies.\n"
+            "story must be a string in the format 'As a <actor>, I want <goal>, so that <benefit>'.\n"
+            "acceptance_criteria must be an array of objects with key: text.\n"
+            "Each acceptance criterion must use Given/When/Then wording.\n"
+            "dependencies must be an array of objects with keys: name, dependency_type.\n"
+            "Use dependency_type values like blocks, depends_on, relates_to, or integrates_with.\n"
+            "Write 1 to 3 epics and 2 to 4 stories per epic.\n"
+            "Do not return duplicates, filler, placeholders, markdown, commentary, or empty fields.\n"
             "Do not include markdown or explanation.\n\n"
             f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}"
         )
         result = await self._generate_json(prompt)
-        return self._normalize_stories(self._ensure_string_list(result.get("stories")), extracted)
-
-    async def generate_acceptance_criteria(
-        self,
-        stories: list[str],
-        extracted: dict[str, list[str]],
-    ) -> list[StoryDraft]:
-        prompt = (
-            "You generate acceptance criteria for rough user stories.\n"
-            "Return strict JSON with one key: acceptance_criteria.\n"
-            "acceptance_criteria must be an array where each item is an object "
-            "with keys story and criteria. criteria must be an array of short strings.\n"
-            "Each criterion must use Given/When/Then wording and be concrete and testable.\n"
-            "Return 2 to 4 criteria per story.\n"
-            "Do not include markdown or explanation.\n\n"
-            f"Stories:\n{json.dumps(stories, ensure_ascii=True)}\n\n"
-            f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}"
-        )
-        result = await self._generate_json(prompt)
-        raw_items = result.get("acceptance_criteria", [])
-        grouped: list[StoryDraft] = []
-        if isinstance(raw_items, list):
-            for item in raw_items:
-                if isinstance(item, dict):
-                    story = str(item.get("story", "")).strip()
-                    criteria = self._normalize_criteria(
-                        self._ensure_string_list(item.get("criteria"))
-                    )
-                    if story:
-                        grouped.append(
-                            StoryDraft(story=story, acceptance_criteria=criteria)
-                        )
-        if not grouped:
-            return [
-                StoryDraft(
-                    story=story,
-                    acceptance_criteria=self._fallback_criteria(story),
-                )
-                for story in stories
-            ]
-        return self._align_story_drafts(stories, grouped)
+        try:
+            backlog = BacklogGeneration.model_validate(result)
+            return self._clean_epics(backlog.epics, extracted)
+        except ValidationError:
+            logger.warning("Backlog validation failed, using fallback backlog")
+            return self._fallback_backlog(extracted)
 
     def build_summary(
         self,
         extracted: dict[str, list[str]],
-        stories: list[StoryDraft],
+        epics: list[Epic],
     ) -> str:
         actors = ", ".join(extracted.get("actors", [])[:2]) or "users"
         feature_count = len(extracted.get("features", []))
-        story_count = len(stories)
+        story_count = sum(len(epic.stories) for epic in epics)
         return (
             f"Generated {story_count} rough user stories for {actors}, "
             f"covering {feature_count} key feature areas."
@@ -118,78 +95,215 @@ class LLMService:
             constraints=extracted.get("constraints", []),
         )
 
-    def _align_story_drafts(
+    def _clean_epics(
         self,
-        stories: list[str],
-        generated: list[StoryDraft],
-    ) -> list[StoryDraft]:
-        by_story = {draft.story: draft for draft in generated}
-        aligned: list[StoryDraft] = []
-        for story in stories:
-            draft = by_story.get(story)
-            if draft:
-                aligned.append(draft)
-            else:
-                aligned.append(
-                    StoryDraft(
-                        story=story,
-                        acceptance_criteria=self._fallback_criteria(story),
+        epics: list[Epic],
+        extracted: dict[str, list[str]],
+    ) -> list[Epic]:
+        cleaned_epics: list[Epic] = []
+        seen_epics: set[str] = set()
+
+        for epic in epics:
+            epic_title = self._clean_text(epic.title)
+            epic_summary = self._clean_text(epic.summary)
+            if not epic_title or not epic_summary:
+                continue
+
+            epic_key = epic_title.lower()
+            if epic_key in seen_epics:
+                continue
+            seen_epics.add(epic_key)
+
+            cleaned_stories: list[Story] = []
+            seen_stories: set[str] = set()
+            for story in epic.stories:
+                normalized_story = self._normalize_story_text(story.story, extracted)
+                story_title = self._clean_text(story.title) or self._derive_story_title(
+                    normalized_story
+                )
+                if not normalized_story or self._looks_like_garbage(normalized_story):
+                    continue
+
+                story_key = normalized_story.lower()
+                if story_key in seen_stories:
+                    continue
+                seen_stories.add(story_key)
+
+                criteria = self._clean_acceptance_criteria(
+                    story.acceptance_criteria,
+                    normalized_story,
+                )
+                dependencies = self._clean_dependencies(story.dependencies)
+                cleaned_stories.append(
+                    Story(
+                        title=story_title,
+                        story=normalized_story,
+                        acceptance_criteria=criteria,
+                        dependencies=dependencies,
                     )
                 )
-        return aligned
 
-    def _normalize_stories(
+            if cleaned_stories:
+                cleaned_epics.append(
+                    Epic(title=epic_title, summary=epic_summary, stories=cleaned_stories)
+                )
+
+        return cleaned_epics or self._fallback_backlog(extracted)
+
+    def _clean_acceptance_criteria(
         self,
-        stories: list[str],
-        extracted: dict[str, list[str]],
-    ) -> list[str]:
-        normalized: list[str] = []
-        actors = extracted.get("actors", [])
-        goals = extracted.get("goals", [])
-
-        for index, story in enumerate(stories):
-            cleaned = " ".join(story.split())
-            if not cleaned:
+        criteria: list[AcceptanceCriterion],
+        story: str,
+    ) -> list[AcceptanceCriterion]:
+        cleaned: list[AcceptanceCriterion] = []
+        seen: set[str] = set()
+        for criterion in criteria:
+            text = self._normalize_criterion_text(criterion.text)
+            key = text.lower()
+            if not text or key in seen or self._looks_like_garbage(text):
                 continue
-            if cleaned.lower().startswith("as a ") or cleaned.lower().startswith("as an "):
-                normalized.append(cleaned)
-                continue
+            seen.add(key)
+            cleaned.append(AcceptanceCriterion(text=text))
 
-            actor = actors[min(index, len(actors) - 1)] if actors else "user"
-            goal = cleaned.rstrip(".")
-            benefit = goals[0].rstrip(".") if goals else "the team can act on the requirement"
-            article = "an" if actor[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
-            normalized.append(
-                f"As {article} {actor}, I want {goal}, so that {benefit}."
+        if cleaned:
+            return cleaned
+        return self._fallback_criteria(story)
+
+    def _clean_dependencies(self, dependencies: list[Dependency]) -> list[Dependency]:
+        cleaned: list[Dependency] = []
+        seen: set[tuple[str, str]] = set()
+        for dependency in dependencies:
+            name = self._clean_text(dependency.name)
+            dep_type = self._clean_text(dependency.dependency_type).lower() or "relates_to"
+            key = (name.lower(), dep_type)
+            if not name or key in seen or self._looks_like_garbage(name):
+                continue
+            seen.add(key)
+            cleaned.append(Dependency(name=name, dependency_type=dep_type))
+        return cleaned
+
+    def _fallback_backlog(self, extracted: dict[str, list[str]]) -> list[Epic]:
+        actors = extracted.get("actors", []) or ["user"]
+        goals = extracted.get("goals", []) or ["achieve the core business outcome"]
+        features = extracted.get("features", []) or ["support the primary workflow"]
+        constraints = extracted.get("constraints", [])
+
+        stories: list[Story] = []
+        for index, feature in enumerate(features[:3]):
+            actor = actors[min(index, len(actors) - 1)]
+            goal = goals[min(index, len(goals) - 1)] if goals else feature
+            story_text = self._normalize_story_text(feature, {"actors": [actor], "goals": [goal]})
+            stories.append(
+                Story(
+                    title=self._derive_story_title(story_text),
+                    story=story_text,
+                    acceptance_criteria=self._fallback_criteria(story_text),
+                    dependencies=self._fallback_dependencies(constraints),
+                )
             )
 
-        return normalized
+        return [
+            Epic(
+                title="Core Product Workflow",
+                summary="Initial backlog draft generated from extracted requirements.",
+                stories=stories,
+            )
+        ]
 
-    def _normalize_criteria(self, criteria: list[str]) -> list[str]:
-        normalized: list[str] = []
-        for criterion in criteria:
-            cleaned = " ".join(criterion.split())
-            if not cleaned:
-                continue
-            if cleaned.lower().startswith("given "):
-                normalized.append(cleaned)
-            else:
-                normalized.append(f"Given a valid request, when processing runs, then {cleaned.rstrip('.')}.")
-        return normalized
-
-    def _fallback_criteria(self, story: str) -> list[str]:
+    def _fallback_criteria(self, story: str) -> list[AcceptanceCriterion]:
         goal = self._extract_goal_fragment(story)
         return [
-            f"Given valid requirement text is submitted, when the service processes the request, then the response includes the story '{story}'.",
-            f"Given the story '{story}', when acceptance criteria are generated, then each criterion is testable and uses Given/When/Then wording.",
-            f"Given the goal '{goal}', when the response is returned, then it aligns with the extracted actors, goals, features, and constraints.",
+            AcceptanceCriterion(
+                text=(
+                    "Given valid requirement text is submitted, when the service "
+                    f"processes the request, then the story '{story}' is returned."
+                )
+            ),
+            AcceptanceCriterion(
+                text=(
+                    f"Given the story '{story}', when backlog details are generated, "
+                    "then the acceptance criteria are testable and use Given/When/Then wording."
+                )
+            ),
+            AcceptanceCriterion(
+                text=(
+                    f"Given the goal '{goal}', when the response is produced, then the story "
+                    "aligns with the extracted actors, goals, features, and constraints."
+                )
+            ),
         ]
+
+    def _fallback_dependencies(self, constraints: list[str]) -> list[Dependency]:
+        return [
+            Dependency(name=constraint, dependency_type="depends_on")
+            for constraint in constraints[:2]
+            if constraint
+        ]
+
+    def _normalize_story_text(
+        self,
+        story: str,
+        extracted: dict[str, list[str]],
+    ) -> str:
+        cleaned = self._clean_text(story)
+        if not cleaned:
+            return ""
+        if cleaned.lower().startswith("as a ") or cleaned.lower().startswith("as an "):
+            return cleaned
+
+        actors = extracted.get("actors", [])
+        goals = extracted.get("goals", [])
+        actor = actors[0] if actors else "user"
+        benefit = goals[0].rstrip(".") if goals else "the team can act on the requirement"
+        article = "an" if actor[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
+        return f"As {article} {actor}, I want {cleaned.rstrip('.')}, so that {benefit}."
+
+    def _normalize_criterion_text(self, text: str) -> str:
+        cleaned = self._clean_text(text)
+        if not cleaned:
+            return ""
+        if cleaned.lower().startswith("given "):
+            return cleaned
+        return f"Given a valid request, when processing runs, then {cleaned.rstrip('.')}."
+
+    def _derive_story_title(self, story: str) -> str:
+        match = re.search(r"I want (.*?), so that", story)
+        if match:
+            return self._clean_text(match.group(1)).rstrip(".").title()[:120]
+        return self._clean_text(story)[:120]
 
     def _extract_goal_fragment(self, story: str) -> str:
         match = re.search(r"I want (.*?), so that", story)
         if match:
-            return match.group(1)
-        return story
+            return self._clean_text(match.group(1))
+        return self._clean_text(story)
+
+    def _clean_text_items(self, items: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            value = self._clean_text(item)
+            key = value.lower()
+            if not value or key in seen or self._looks_like_garbage(value):
+                continue
+            seen.add(key)
+            cleaned.append(value)
+        return cleaned
+
+    def _clean_text(self, text: str) -> str:
+        cleaned = " ".join(str(text).split()).strip()
+        cleaned = re.sub(r"^[\-\*\d\.\)\(]+", "", cleaned).strip()
+        return cleaned
+
+    def _looks_like_garbage(self, text: str) -> bool:
+        lowered = text.lower()
+        if lowered in {"n/a", "na", "none", "null", "tbd", "todo", "placeholder"}:
+            return True
+        if len(lowered) < 3:
+            return True
+        if re.fullmatch(r"[\W_]+", lowered):
+            return True
+        return False
 
     async def _generate_json(self, prompt: str) -> dict[str, Any]:
         payload = {
@@ -213,8 +327,19 @@ class LLMService:
 
         raw_response = body.get("response", "{}")
         logger.info("Received Ollama response model=%s", self.settings.llm_model)
-        parsed = json.loads(raw_response)
+        parsed = self._parse_json_response(raw_response)
         return parsed if isinstance(parsed, dict) else {}
+
+    def _parse_json_response(self, raw_response: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw_response)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+            if not match:
+                raise
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
 
     def _ensure_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):

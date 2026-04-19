@@ -32,13 +32,7 @@ async def parse_requirements_endpoint(
 
     try:
         extracted = await llm_service.extract_requirements(normalized_text, sections)
-        print("Extracted requirements:", extracted)  # Debug log for extracted data
-        story_texts = await llm_service.generate_stories(extracted)
-        print("Generated story texts:", story_texts)  # Debug log for generated stories
-        stories = await llm_service.generate_acceptance_criteria(
-            story_texts,
-            extracted,
-        )
+        epics = await llm_service.generate_backlog(extracted)
     except httpx.HTTPError as exc:
         logger.exception("Ollama request failed")
         raise HTTPException(
@@ -53,9 +47,9 @@ async def parse_requirements_endpoint(
         ) from exc
 
     return RequirementsResponse(
-        summary=llm_service.build_summary(extracted, stories),
+        summary=llm_service.build_summary(extracted, epics),
         extracted=llm_service.build_extraction_summary(extracted),
-        stories=stories,
+        epics=epics,
         normalized_text=normalized_text,
         sections=sections,
     )
