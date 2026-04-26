@@ -1,41 +1,66 @@
 {
-  "summary": "Generated 2 rough user stories for Product managers, internal analysts, covering 3 key feature areas.",
+  "summary": "Generated 4 rough user stories for Patients, Reception staff, covering 6 key feature areas.",
   "extracted": {
-    "actors": ["Product managers", "internal analysts"],
+    "actors": ["Patients", "Reception staff", "Clinic managers", "Doctors"],
     "goals": [
-      "Turn raw requirement notes into rough user stories and acceptance criteria."
+      "Allow patients to book, reschedule, and cancel appointments online.",
+      "Reduce manual work for reception staff.",
+      "Improve appointment utilization by filling cancelled slots faster.",
+      "Provide clinic managers with visibility into no-shows, cancellations, and schedule efficiency."
     ],
     "features": [
-      "Users can paste long-form discovery notes.",
-      "Identify actors, goals, key features, and constraints.",
-      "Generate rough user stories with acceptance criteria."
+      "Patients should be able to search by specialty, location, and earliest available appointment.",
+      "Patients should receive confirmation and reminder notifications by SMS or email.",
+      "Reception staff should be able to create bookings on behalf of patients.",
+      "The system should prevent double-booking of doctors and rooms.",
+      "Clinic managers should have a dashboard showing cancellations, no-shows, and utilization trends.",
+      "High-priority patients should be flagged for faster scheduling when appropriate."
     ],
     "constraints": [
-      "Use Ollama with llama3.1:8b locally.",
-      "Responses should be concise and useful for backlog grooming."
+      "The first release should support web only, not mobile apps.",
+      "The system must comply with healthcare privacy requirements.",
+      "It must integrate with the hospital's existing patient record system.",
+      "The product should be usable by non-technical administrative staff with minimal training.",
+      "Reminder notifications should be configurable per clinic."
     ]
   },
   "stories": [
     {
-      "story": "As a Product manager, I want to turn raw requirement notes into rough user stories and acceptance criteria, so that we can prioritize features effectively.",
+      "story": "As a Patient, I want to book appointments online, so that I can easily schedule time with my doctor.",
       "acceptance_criteria": [
-        "Given the product manager has pasted raw requirement notes into Ollama.",
-        "Given a valid request, when processing runs, then When they navigate to the result page, then the system generates at least one rough user story with acceptance criteria."
+        "Given the patient is logged in, when they search for an available appointment by specialty and location, then the system displays a list of available times.",
+        "Given the patient selects an available appointment, when they confirm the booking, then the patient receives a confirmation email with details of the scheduled appointment."
       ]
     },
     {
-      "story": "As an internal analyst, I want to identify key features and constraints in long-form discovery notes, so that I have the right information for backlog grooming.",
+      "story": "As a Reception Staff, I want to reduce manual work by automating appointment bookings, so that I have more time for patient care.",
       "acceptance_criteria": [
-        "Given the system is running on Ollama with llama3.1:8b locally.",
-        "Given a valid request, when processing runs, then When the internal analyst pastes a large amount of text into Ollama, then the response is concise and useful."
+        "Given the reception staff is logged in, when they search for an available appointment on behalf of a patient, then the system allows them to create a new booking with minimal input required.",
+        "Given the reception staff creates a new booking, when the booking is saved, then the system sends a notification to the relevant doctor and room administrators."
+      ]
+    },
+    {
+      "story": "As a Doctor, I want the system to prevent double-booking, so that I avoid scheduling conflicts and ensure efficient use of my time.",
+      "acceptance_criteria": [
+        "Given the doctor's schedule is updated in real-time, when they attempt to book an appointment that already exists for the same time slot, then the system prevents the booking from being saved.",
+        "Given the doctor's schedule is up-to-date, when they search for available appointments, then the system displays a clear indication of which times are already booked."
+      ]
+    },
+    {
+      "story": "As a Clinic Manager, I want to track no-shows, cancellations, and schedule efficiency, so that I can optimize our clinic's operations and make data-driven decisions.",
+      "acceptance_criteria": [
+        "Given the clinic manager has access to real-time analytics, when they view the dashboard, then the system displays clear visualizations of no-shows, cancellations, and schedule efficiency trends over time.",
+        "Given the clinic manager receives regular reports on clinic performance, when they review these reports, then they can quickly identify areas for improvement."
       ]
     }
   ],
-  "normalized_text": "Actors:\nProduct managers and internal analysts\n\nGoal:\nTurn raw requirement notes into rough user stories and acceptance criteria.\n\nFeatures:\nUsers can paste long-form discovery notes.\nThe system should identify actors, goals, key features, and constraints.\nThe system should generate rough user stories with acceptance criteria.\n\nConstraints:\nUse Ollama with llama3.1:8b locally.\nResponses should be concise and useful for backlog grooming.",
+  "normalized_text": "Background:\nA mid-sized hospital group currently manages outpatient appointments through phone calls and spreadsheets. Patients often wait on hold for a long time, staff manually re-enter details into multiple systems, and appointment slots are sometimes double-booked or left unused because cancellations are not surfaced quickly.\n\nActors:\nPatients\nReception staff\nClinic managers\nDoctors\n\nProblem:\nThe hospital needs a digital appointment scheduling system that reduces call volume, makes it easier for patients to book or reschedule appointments, and gives staff better visibility into doctor availability.\n\nGoals:\nAllow patients to book, reschedule, and cancel appointments online.\nReduce manual work for reception staff.\nImprove appointment utilization by filling cancelled slots faster.\nProvide clinic managers with visibility into no-shows, cancellations, and schedule efficiency.\n\nFeatures:\nPatients should be able to search by specialty, location, and earliest available appointment.\nPatients should receive confirmation and reminder notifications by SMS or email.\nReception staff should be able to create bookings on behalf of patients.\nThe system should prevent double-booking of doctors and rooms.\nClinic managers should have a dashboard showing cancellations, no-shows, and utilization trends.\nHigh-priority patients should be flagged for faster scheduling when appropriate.\n\nConstraints:\nThe first release should support web only, not mobile apps.\nThe system must comply with healthcare privacy requirements.\nIt must integrate with the hospital's existing patient record system.\nThe product should be usable by non-technical administrative staff with minimal training.\nReminder notifications should be configurable per clinic.",
   "sections": [
-    "Actors:\nProduct managers and internal analysts",
-    "Goal:\nTurn raw requirement notes into rough user stories and acceptance criteria.",
-    "Features:\nUsers can paste long-form discovery notes.\nThe system should identify actors, goals, key features, and constraints.\nThe system should generate rough user stories with acceptance criteria.",
-    "Constraints:\nUse Ollama with llama3.1:8b locally.\nResponses should be concise and useful for backlog grooming."
+    "Background:\nA mid-sized hospital group currently manages outpatient appointments through phone calls and spreadsheets. Patients often wait on hold for a long time, staff manually re-enter details into multiple systems, and appointment slots are sometimes double-booked or left unused because cancellations are not surfaced quickly.",
+    "Actors:\nPatients\nReception staff\nClinic managers\nDoctors",
+    "Problem:\nThe hospital needs a digital appointment scheduling system that reduces call volume, makes it easier for patients to book or reschedule appointments, and gives staff better visibility into doctor availability.",
+    "Goals:\nAllow patients to book, reschedule, and cancel appointments online.\nReduce manual work for reception staff.\nImprove appointment utilization by filling cancelled slots faster.\nProvide clinic managers with visibility into no-shows, cancellations, and schedule efficiency.",
+    "Features:\nPatients should be able to search by specialty, location, and earliest available appointment.\nPatients should receive confirmation and reminder notifications by SMS or email.\nReception staff should be able to create bookings on behalf of patients.\nThe system should prevent double-booking of doctors and rooms.\nClinic managers should have a dashboard showing cancellations, no-shows, and utilization trends.\nHigh-priority patients should be flagged for faster scheduling when appropriate.",
+    "Constraints:\nThe first release should support web only, not mobile apps.\nThe system must comply with healthcare privacy requirements.\nIt must integrate with the hospital's existing patient record system.\nThe product should be usable by non-technical administrative staff with minimal training.\nReminder notifications should be configurable per clinic."
   ]
 }

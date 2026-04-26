@@ -1,6 +1,6 @@
-"""Shared orchestration state definitions."""
+"""Compatibility exports for orchestration state."""
 
-from typing import Any
+from app.orchestration.common.state import ExtractedContext
+from app.orchestration.common.state import RequirementsWorkflowState
 
-
-GraphState = dict[str, Any]
+__all__ = ["ExtractedContext", "RequirementsWorkflowState"]

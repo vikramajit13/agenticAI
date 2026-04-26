@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from app.domain.models import Epic
+from app.orchestration.common.state import ExtractedContext
 
 
 class ExtractionSummary(BaseModel):
@@ -20,8 +21,10 @@ class StoryDraft(BaseModel):
 
 class RequirementsResponse(BaseModel):
     summary: str
-    extracted: ExtractionSummary
+    extracted: ExtractionSummary | ExtractedContext
     epics: list[Epic] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
     normalized_text: str
     sections: list[str] = Field(default_factory=list)
 

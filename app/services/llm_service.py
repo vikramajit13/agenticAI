@@ -24,6 +24,18 @@ class BacklogGeneration(BaseModel):
     epics: list[Epic]
 
 
+class OpenQuestionResult(BaseModel):
+    open_questions: list[str]
+    assumptions: list[str]
+
+
+class ExtractedRequirementsResult(BaseModel):
+    actors: list[str]
+    goals: list[str]
+    features: list[str]
+    constraints: list[str]
+
+
 class LLMService:
     """Ollama-backed service for requirements analysis and generation."""
 
@@ -37,9 +49,13 @@ class LLMService:
             "Each value must be an array of short strings.\n"
             "Do not include markdown or explanation.\n\n"
             f"Full text:\n{text}\n\n"
-            f"Parsed sections:\n{json.dumps(sections, ensure_ascii=True)}"
+            f"Parsed sections:\n{json.dumps(sections, ensure_ascii=True)}\n\n"
+            f"JSON schema:\n{json.dumps(ExtractedRequirementsResult.model_json_schema(), ensure_ascii=True)}"
         )
-        result = await self._generate_json(prompt)
+        result = await self._generate_json(
+            prompt,
+            format_schema=ExtractedRequirementsResult.model_json_schema(),
+        )
         return {
             "actors": self._clean_text_items(self._ensure_string_list(result.get("actors"))),
             "goals": self._clean_text_items(self._ensure_string_list(result.get("goals"))),
@@ -47,29 +63,84 @@ class LLMService:
             "constraints": self._clean_text_items(self._ensure_string_list(result.get("constraints"))),
         }
 
-    async def generate_backlog(self, extracted: dict[str, list[str]]) -> list[Epic]:
+    async def generate_epics_and_stories(self, extracted: dict[str, list[str]]) -> list[Epic]:
         prompt = (
-            "You generate backlog-ready epics, user stories, acceptance criteria, and dependencies.\n"
+            "You generate backlog-ready epics and user stories.\n"
             "Return strict JSON with exactly one top-level key: epics.\n"
             "epics must be an array of objects with keys: title, summary, stories.\n"
             "stories must be an array of objects with keys: title, story, acceptance_criteria, dependencies.\n"
             "story must be a string in the format 'As a <actor>, I want <goal>, so that <benefit>'.\n"
-            "acceptance_criteria must be an array of objects with key: text.\n"
-            "Each acceptance criterion must use Given/When/Then wording.\n"
-            "dependencies must be an array of objects with keys: name, dependency_type.\n"
-            "Use dependency_type values like blocks, depends_on, relates_to, or integrates_with.\n"
-            "Write 1 to 3 epics and 2 to 4 stories per epic.\n"
+            "Set acceptance_criteria to an empty array for now.\n"
+            "Set dependencies to an empty array for now.\n"
+            "Write 1 to 2 epics and 2 to 3 stories per epic.\n"
             "Do not return duplicates, filler, placeholders, markdown, commentary, or empty fields.\n"
             "Do not include markdown or explanation.\n\n"
-            f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}"
+            f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}\n\n"
+            f"JSON schema:\n{json.dumps(BacklogGeneration.model_json_schema(), ensure_ascii=True)}"
         )
-        result = await self._generate_json(prompt)
+        result = await self._generate_json(
+            prompt,
+            format_schema=BacklogGeneration.model_json_schema(),
+        )
         try:
             backlog = BacklogGeneration.model_validate(result)
             return self._clean_epics(backlog.epics, extracted)
         except ValidationError:
-            logger.warning("Backlog validation failed, using fallback backlog")
+            logger.warning("Epic/story validation failed, using fallback backlog")
             return self._fallback_backlog(extracted)
+
+    async def generate_acceptance_criteria(
+        self,
+        epics: list[Epic],
+        extracted: dict[str, list[str]],
+    ) -> list[Epic]:
+        prompt = (
+            "You generate acceptance criteria for the provided backlog draft.\n"
+            "Return strict JSON with exactly one top-level key: epics.\n"
+            "Keep epic titles, summaries, story titles, and story text intact.\n"
+            "For each story, populate acceptance_criteria as an array of objects with key: text.\n"
+            "Each acceptance criterion must use Given/When/Then wording.\n"
+            "Return exactly 2 concise acceptance criteria per story.\n"
+            "Leave dependencies as an empty array.\n"
+            "Do not include markdown or explanation.\n\n"
+            f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}\n\n"
+            f"Current backlog:\n{json.dumps([epic.model_dump() for epic in epics], ensure_ascii=True)}\n\n"
+            f"JSON schema:\n{json.dumps(BacklogGeneration.model_json_schema(), ensure_ascii=True)}"
+        )
+        result = await self._generate_json(
+            prompt,
+            format_schema=BacklogGeneration.model_json_schema(),
+        )
+        try:
+            backlog = BacklogGeneration.model_validate(result)
+            return self._clean_epics(backlog.epics, extracted)
+        except ValidationError:
+            logger.warning("Acceptance criteria validation failed, filling criteria heuristically")
+            return self._fill_missing_acceptance_criteria(epics)
+
+    def derive_dependencies(
+        self,
+        epics: list[Epic],
+        extracted: dict[str, list[str]],
+    ) -> list[Epic]:
+        """Quick heuristic dependency pass to avoid another slow LLM call."""
+        return self._fill_missing_dependencies(epics, extracted)
+
+    def derive_open_questions(
+        self,
+        extracted: dict[str, list[str]],
+        epics: list[Epic],
+    ) -> dict[str, list[str]]:
+        """Quick heuristic open-question pass to avoid another slow LLM call."""
+        result = self._fallback_open_questions(extracted)
+        if epics and not result["open_questions"]:
+            result["open_questions"].append(
+                "Which stories should be prioritized for the first implementation slice?"
+            )
+        return {
+            "open_questions": self._clean_text_items(result["open_questions"]),
+            "assumptions": self._clean_text_items(result["assumptions"]),
+        }
 
     def build_summary(
         self,
@@ -210,6 +281,53 @@ class LLMService:
             )
         ]
 
+    def _fill_missing_acceptance_criteria(self, epics: list[Epic]) -> list[Epic]:
+        updated: list[Epic] = []
+        for epic in epics:
+            updated_stories: list[Story] = []
+            for story in epic.stories:
+                criteria = (
+                    story.acceptance_criteria
+                    if story.acceptance_criteria
+                    else self._fallback_criteria(story.story)
+                )
+                updated_stories.append(
+                    Story(
+                        title=story.title,
+                        story=story.story,
+                        acceptance_criteria=criteria,
+                        dependencies=story.dependencies,
+                    )
+                )
+            updated.append(
+                Epic(title=epic.title, summary=epic.summary, stories=updated_stories)
+            )
+        return updated
+
+    def _fill_missing_dependencies(
+        self,
+        epics: list[Epic],
+        extracted: dict[str, list[str]],
+    ) -> list[Epic]:
+        fallback_dependencies = self._fallback_dependencies(extracted.get("constraints", []))
+        updated: list[Epic] = []
+        for epic in epics:
+            updated_stories: list[Story] = []
+            for story in epic.stories:
+                dependencies = story.dependencies or fallback_dependencies
+                updated_stories.append(
+                    Story(
+                        title=story.title,
+                        story=story.story,
+                        acceptance_criteria=story.acceptance_criteria,
+                        dependencies=dependencies,
+                    )
+                )
+            updated.append(
+                Epic(title=epic.title, summary=epic.summary, stories=updated_stories)
+            )
+        return updated
+
     def _fallback_criteria(self, story: str) -> list[AcceptanceCriterion]:
         goal = self._extract_goal_fragment(story)
         return [
@@ -239,6 +357,25 @@ class LLMService:
             for constraint in constraints[:2]
             if constraint
         ]
+
+    def _fallback_open_questions(
+        self,
+        extracted: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        questions: list[str] = []
+        assumptions: list[str] = []
+        if not extracted.get("actors"):
+            questions.append("Who is the primary user or actor for the first release?")
+        if not extracted.get("constraints"):
+            questions.append("Are there platform, compliance, or integration constraints?")
+        if extracted.get("features"):
+            assumptions.append("The listed features are all in scope for the initial backlog draft.")
+        if extracted.get("goals"):
+            assumptions.append("The extracted goals accurately represent the business outcome.")
+        return {
+            "open_questions": self._clean_text_items(questions),
+            "assumptions": self._clean_text_items(assumptions),
+        }
 
     def _normalize_story_text(
         self,
@@ -305,18 +442,33 @@ class LLMService:
             return True
         return False
 
-    async def _generate_json(self, prompt: str) -> dict[str, Any]:
+    async def _generate_json(
+        self,
+        prompt: str,
+        format_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload = {
             "model": self.settings.llm_model,
             "prompt": prompt,
             "stream": False,
-            "format": "json",
+            "format": format_schema or "json",
+            "options": {
+                "temperature": self.settings.ollama_temperature,
+            },
         }
+        if self.settings.ollama_num_predict is not None:
+            payload["options"]["num_predict"] = self.settings.ollama_num_predict
         headers = {}
         if self.settings.api_key:
             headers["Authorization"] = f"Bearer {self.settings.api_key}"
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self.settings.ollama_timeout_seconds,
+            write=30.0,
+            pool=30.0,
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self.settings.ollama_base_url}/api/generate",
                 json=payload,
@@ -335,11 +487,18 @@ class LLMService:
             parsed = json.loads(raw_response)
             return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
+            logger.warning(
+                "Model returned malformed JSON; attempting salvage snippet=%s",
+                raw_response[:500].replace("\n", "\\n"),
+            )
             match = re.search(r"\{.*\}", raw_response, re.DOTALL)
             if not match:
-                raise
-            parsed = json.loads(match.group(0))
-            return parsed if isinstance(parsed, dict) else {}
+                return {}
+            try:
+                parsed = json.loads(match.group(0))
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
 
     def _ensure_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):

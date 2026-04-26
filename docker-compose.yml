@@ -11,3 +11,5 @@ services:
       LOG_LEVEL: INFO
       LLM_MODEL: llama3.1:8b
       OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_TIMEOUT_SECONDS: 180
+      OLLAMA_TEMPERATURE: 0.1
