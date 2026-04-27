@@ -14,6 +14,7 @@ from app.domain.models import Dependency
 from app.domain.models import Epic
 from app.domain.models import Story
 from app.logging import get_logger
+from app.orchestration.common.state import Section
 from app.schemas.responses import ExtractionSummary
 
 
@@ -30,10 +31,10 @@ class OpenQuestionResult(BaseModel):
 
 
 class ExtractedRequirementsResult(BaseModel):
-    actors: list[str]
-    goals: list[str]
-    features: list[str]
-    constraints: list[str]
+    actors: list[dict[str, Any]]
+    goals: list[dict[str, Any]]
+    features: list[dict[str, Any]]
+    constraints: list[dict[str, Any]]
 
 
 class LLMService:
@@ -42,40 +43,62 @@ class LLMService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def extract_requirements(self, text: str, sections: list[str]) -> dict[str, list[str]]:
+    async def extract_requirements(
+        self,
+        text: str,
+        sections: list[Section],
+    ) -> dict[str, Any]:
+        section_payload = [section.model_dump() for section in sections]
         prompt = (
             "You extract structured requirement details from product notes.\n"
             "Return strict JSON with keys: actors, goals, features, constraints.\n"
-            "Each value must be an array of short strings.\n"
+            "Each value must be an array of objects with keys: text and source_refs.\n"
+            "source_refs must be an array of valid section IDs such as S1 or S2.\n"
+            "Only use section IDs that appear in the provided parsed sections.\n"
             "Do not include markdown or explanation.\n\n"
             f"Full text:\n{text}\n\n"
-            f"Parsed sections:\n{json.dumps(sections, ensure_ascii=True)}\n\n"
+            f"Parsed sections:\n{json.dumps(section_payload, ensure_ascii=True)}\n\n"
             f"JSON schema:\n{json.dumps(ExtractedRequirementsResult.model_json_schema(), ensure_ascii=True)}"
         )
         result = await self._generate_json(
             prompt,
             format_schema=ExtractedRequirementsResult.model_json_schema(),
         )
+        valid_section_ids = {section.id for section in sections}
         return {
-            "actors": self._clean_text_items(self._ensure_string_list(result.get("actors"))),
-            "goals": self._clean_text_items(self._ensure_string_list(result.get("goals"))),
-            "features": self._clean_text_items(self._ensure_string_list(result.get("features"))),
-            "constraints": self._clean_text_items(self._ensure_string_list(result.get("constraints"))),
+            "actors": self._extract_grounded_texts(result.get("actors"), valid_section_ids),
+            "goals": self._extract_grounded_texts(result.get("goals"), valid_section_ids),
+            "features": self._extract_grounded_texts(result.get("features"), valid_section_ids),
+            "constraints": self._extract_grounded_texts(result.get("constraints"), valid_section_ids),
+            "source_refs_by_category": {
+                "actors": self._extract_grounded_refs(result.get("actors"), valid_section_ids),
+                "goals": self._extract_grounded_refs(result.get("goals"), valid_section_ids),
+                "features": self._extract_grounded_refs(result.get("features"), valid_section_ids),
+                "constraints": self._extract_grounded_refs(result.get("constraints"), valid_section_ids),
+            },
         }
 
-    async def generate_epics_and_stories(self, extracted: dict[str, list[str]]) -> list[Epic]:
+    async def generate_epics_and_stories(
+        self,
+        extracted: dict[str, Any],
+        sections: list[Section],
+    ) -> list[Epic]:
+        section_payload = [section.model_dump() for section in sections]
         prompt = (
             "You generate backlog-ready epics and user stories.\n"
             "Return strict JSON with exactly one top-level key: epics.\n"
             "epics must be an array of objects with keys: title, summary, stories.\n"
-            "stories must be an array of objects with keys: title, story, acceptance_criteria, dependencies.\n"
+            "stories must be an array of objects with keys: title, story, acceptance_criteria, dependencies, source_refs.\n"
+            "source_refs must be an array of valid section IDs such as S1 or S2.\n"
             "story must be a string in the format 'As a <actor>, I want <goal>, so that <benefit>'.\n"
             "Set acceptance_criteria to an empty array for now.\n"
             "Set dependencies to an empty array for now.\n"
             "Write 1 to 2 epics and 2 to 3 stories per epic.\n"
             "Do not return duplicates, filler, placeholders, markdown, commentary, or empty fields.\n"
+            "If the grounding is unclear, return an empty source_refs array rather than making up a reference.\n"
             "Do not include markdown or explanation.\n\n"
             f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}\n\n"
+            f"Available sections:\n{json.dumps(section_payload, ensure_ascii=True)}\n\n"
             f"JSON schema:\n{json.dumps(BacklogGeneration.model_json_schema(), ensure_ascii=True)}"
         )
         result = await self._generate_json(
@@ -84,7 +107,11 @@ class LLMService:
         )
         try:
             backlog = BacklogGeneration.model_validate(result)
-            return self._clean_epics(backlog.epics, extracted)
+            return self._clean_epics(
+                backlog.epics,
+                extracted,
+                valid_section_ids={section.id for section in sections},
+            )
         except ValidationError:
             logger.warning("Epic/story validation failed, using fallback backlog")
             return self._fallback_backlog(extracted)
@@ -92,18 +119,20 @@ class LLMService:
     async def generate_acceptance_criteria(
         self,
         epics: list[Epic],
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
+        sections: list[Section],
     ) -> list[Epic]:
         prompt = (
             "You generate acceptance criteria for the provided backlog draft.\n"
             "Return strict JSON with exactly one top-level key: epics.\n"
-            "Keep epic titles, summaries, story titles, and story text intact.\n"
+            "Keep epic titles, summaries, story titles, story text, and story source_refs intact.\n"
             "For each story, populate acceptance_criteria as an array of objects with key: text.\n"
             "Each acceptance criterion must use Given/When/Then wording.\n"
             "Return exactly 2 concise acceptance criteria per story.\n"
             "Leave dependencies as an empty array.\n"
             "Do not include markdown or explanation.\n\n"
             f"Extracted data:\n{json.dumps(extracted, ensure_ascii=True)}\n\n"
+            f"Available sections:\n{json.dumps([section.model_dump() for section in sections], ensure_ascii=True)}\n\n"
             f"Current backlog:\n{json.dumps([epic.model_dump() for epic in epics], ensure_ascii=True)}\n\n"
             f"JSON schema:\n{json.dumps(BacklogGeneration.model_json_schema(), ensure_ascii=True)}"
         )
@@ -113,7 +142,11 @@ class LLMService:
         )
         try:
             backlog = BacklogGeneration.model_validate(result)
-            return self._clean_epics(backlog.epics, extracted)
+            return self._clean_epics(
+                backlog.epics,
+                extracted,
+                valid_section_ids={section.id for section in sections},
+            )
         except ValidationError:
             logger.warning("Acceptance criteria validation failed, filling criteria heuristically")
             return self._fill_missing_acceptance_criteria(epics)
@@ -121,14 +154,14 @@ class LLMService:
     def derive_dependencies(
         self,
         epics: list[Epic],
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
     ) -> list[Epic]:
         """Quick heuristic dependency pass to avoid another slow LLM call."""
         return self._fill_missing_dependencies(epics, extracted)
 
     def derive_open_questions(
         self,
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
         epics: list[Epic],
         ambiguity_flags: list[str] | None = None,
         completeness_score: float = 1.0,
@@ -151,7 +184,7 @@ class LLMService:
     def assess_requirement_quality(
         self,
         normalized_text: str,
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
     ) -> dict[str, object]:
         """Heuristically score requirement completeness and identify ambiguity."""
         flags: list[str] = []
@@ -226,7 +259,7 @@ class LLMService:
 
     def build_summary(
         self,
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
         epics: list[Epic],
     ) -> str:
         actors = ", ".join(extracted.get("actors", [])[:2]) or "users"
@@ -246,15 +279,18 @@ class LLMService:
             goals=extracted.get("goals", []),
             features=extracted.get("features", []),
             constraints=extracted.get("constraints", []),
+            source_refs_by_category=extracted.get("source_refs_by_category", {}),
         )
 
     def _clean_epics(
         self,
         epics: list[Epic],
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
+        valid_section_ids: set[str] | None = None,
     ) -> list[Epic]:
         cleaned_epics: list[Epic] = []
         seen_epics: set[str] = set()
+        valid_ids = valid_section_ids or self._collect_valid_source_refs(extracted)
 
         for epic in epics:
             epic_title = self._clean_text(epic.title)
@@ -282,15 +318,21 @@ class LLMService:
                     continue
                 seen_stories.add(story_key)
 
+                source_refs = self._clean_source_refs(story.source_refs, valid_ids)
                 criteria = self._clean_acceptance_criteria(
                     story.acceptance_criteria,
                     normalized_story,
                 )
-                dependencies = self._clean_dependencies(story.dependencies)
+                dependencies = self._clean_dependencies(
+                    story.dependencies,
+                    valid_ids,
+                    fallback_source_refs=source_refs,
+                )
                 cleaned_stories.append(
                     Story(
                         title=story_title,
                         story=normalized_story,
+                        source_refs=source_refs,
                         acceptance_criteria=criteria,
                         dependencies=dependencies,
                     )
@@ -322,7 +364,12 @@ class LLMService:
             return cleaned
         return self._fallback_criteria(story)
 
-    def _clean_dependencies(self, dependencies: list[Dependency]) -> list[Dependency]:
+    def _clean_dependencies(
+        self,
+        dependencies: list[Dependency],
+        valid_section_ids: set[str],
+        fallback_source_refs: list[str] | None = None,
+    ) -> list[Dependency]:
         cleaned: list[Dependency] = []
         seen: set[tuple[str, str]] = set()
         for dependency in dependencies:
@@ -332,14 +379,25 @@ class LLMService:
             if not name or key in seen or self._looks_like_garbage(name):
                 continue
             seen.add(key)
-            cleaned.append(Dependency(name=name, dependency_type=dep_type))
+            source_refs = self._clean_source_refs(
+                dependency.source_refs,
+                valid_section_ids,
+            ) or list(fallback_source_refs or [])
+            cleaned.append(
+                Dependency(
+                    name=name,
+                    dependency_type=dep_type,
+                    source_refs=source_refs,
+                )
+            )
         return cleaned
 
-    def _fallback_backlog(self, extracted: dict[str, list[str]]) -> list[Epic]:
+    def _fallback_backlog(self, extracted: dict[str, Any]) -> list[Epic]:
         actors = extracted.get("actors", []) or ["user"]
         goals = extracted.get("goals", []) or ["achieve the core business outcome"]
         features = extracted.get("features", []) or ["support the primary workflow"]
         constraints = extracted.get("constraints", [])
+        feature_refs = extracted.get("source_refs_by_category", {}).get("features", [])
 
         stories: list[Story] = []
         for index, feature in enumerate(features[:3]):
@@ -350,8 +408,9 @@ class LLMService:
                 Story(
                     title=self._derive_story_title(story_text),
                     story=story_text,
+                    source_refs=list(feature_refs),
                     acceptance_criteria=self._fallback_criteria(story_text),
-                    dependencies=self._fallback_dependencies(constraints),
+                    dependencies=self._fallback_dependencies(constraints, feature_refs),
                 )
             )
 
@@ -389,9 +448,12 @@ class LLMService:
     def _fill_missing_dependencies(
         self,
         epics: list[Epic],
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
     ) -> list[Epic]:
-        fallback_dependencies = self._fallback_dependencies(extracted.get("constraints", []))
+        fallback_dependencies = self._fallback_dependencies(
+            extracted.get("constraints", []),
+            extracted.get("source_refs_by_category", {}).get("constraints", []),
+        )
         updated: list[Epic] = []
         for epic in epics:
             updated_stories: list[Story] = []
@@ -401,6 +463,7 @@ class LLMService:
                     Story(
                         title=story.title,
                         story=story.story,
+                        source_refs=story.source_refs,
                         acceptance_criteria=story.acceptance_criteria,
                         dependencies=dependencies,
                     )
@@ -433,16 +496,24 @@ class LLMService:
             ),
         ]
 
-    def _fallback_dependencies(self, constraints: list[str]) -> list[Dependency]:
+    def _fallback_dependencies(
+        self,
+        constraints: list[str],
+        source_refs: list[str] | None = None,
+    ) -> list[Dependency]:
         return [
-            Dependency(name=constraint, dependency_type="depends_on")
+            Dependency(
+                name=constraint,
+                dependency_type="depends_on",
+                source_refs=list(source_refs or []),
+            )
             for constraint in constraints[:2]
             if constraint
         ]
 
     def _fallback_open_questions(
         self,
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
         ambiguity_flags: list[str] | None = None,
         completeness_score: float = 1.0,
     ) -> dict[str, list[str]]:
@@ -475,7 +546,7 @@ class LLMService:
     def _normalize_story_text(
         self,
         story: str,
-        extracted: dict[str, list[str]],
+        extracted: dict[str, Any],
     ) -> str:
         cleaned = self._clean_text(story)
         if not cleaned:
@@ -599,4 +670,63 @@ class LLMService:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    def _extract_grounded_texts(
+        self,
+        items: Any,
+        valid_section_ids: set[str],
+    ) -> list[str]:
+        if not isinstance(items, list):
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = self._clean_text(item.get("text", ""))
+            refs = self._clean_source_refs(item.get("source_refs", []), valid_section_ids)
+            key = text.lower()
+            if not text or not refs or key in seen or self._looks_like_garbage(text):
+                continue
+            seen.add(key)
+            cleaned.append(text)
+        return cleaned
+
+    def _extract_grounded_refs(
+        self,
+        items: Any,
+        valid_section_ids: set[str],
+    ) -> list[str]:
+        if not isinstance(items, list):
+            return []
+        refs: list[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                refs.extend(self._clean_source_refs(item.get("source_refs", []), valid_section_ids))
+        return list(dict.fromkeys(refs))
+
+    def _clean_source_refs(
+        self,
+        refs: Any,
+        valid_section_ids: set[str],
+    ) -> list[str]:
+        if not isinstance(refs, list):
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for ref in refs:
+            value = str(ref).strip()
+            if value in valid_section_ids and value not in seen:
+                seen.add(value)
+                cleaned.append(value)
+        return cleaned
+
+    def _collect_valid_source_refs(self, extracted: dict[str, Any]) -> set[str]:
+        refs = extracted.get("source_refs_by_category", {})
+        valid: set[str] = set()
+        if isinstance(refs, dict):
+            for value in refs.values():
+                if isinstance(value, list):
+                    valid.update(str(item).strip() for item in value if str(item).strip())
+        return valid
     

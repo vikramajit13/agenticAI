@@ -2,6 +2,8 @@
 
 import re
 
+from app.orchestration.common.state import Section
+
 
 def normalize_text(raw_text: str) -> str:
     """Collapse whitespace while preserving paragraph breaks."""
@@ -11,13 +13,15 @@ def normalize_text(raw_text: str) -> str:
     return text
 
 
-def split_into_sections(normalized_text: str) -> list[str]:
+def split_into_sections(normalized_text: str) -> list[Section]:
     """Split text into rough sections using headings and paragraph breaks."""
     if not normalized_text:
         return []
 
-    sections: list[str] = []
+    sections: list[Section] = []
+    seen_contents: set[str] = set()
     heading: str | None = None
+    section_counter = 1
 
     for block in normalized_text.split("\n\n"):
         lines = [line.strip() for line in block.splitlines() if line.strip()]
@@ -36,26 +40,22 @@ def split_into_sections(normalized_text: str) -> list[str]:
             continue
 
         paragraph = "\n".join(lines).strip()
-        if heading:
-            sections.append(f"{heading}: {paragraph}")
-            heading = None
-        else:
-            sections.append(paragraph)
+        content = f"{heading}: {paragraph}" if heading else paragraph
+        heading = None
+        if content in seen_contents:
+            continue
+        seen_contents.add(content)
+        sections.append(Section(id=f"S{section_counter}", content=content))
+        section_counter += 1
 
     if heading:
-        sections.append(heading)
+        if heading not in seen_contents:
+            sections.append(Section(id=f"S{section_counter}", content=heading))
 
-    # Preserve order while removing duplicates from repeated blocks.
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for section in sections:
-        if section not in seen:
-            seen.add(section)
-            deduped.append(section)
-    return deduped
+    return sections
 
 
-def parse_requirements(raw_text: str) -> list[str]:
+def parse_requirements(raw_text: str) -> list[Section]:
     """Normalize and split raw requirements text into rough sections."""
     normalized = normalize_text(raw_text)
     return split_into_sections(normalized)

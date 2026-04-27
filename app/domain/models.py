@@ -11,11 +11,13 @@ class AcceptanceCriterion(BaseModel):
 class Dependency(BaseModel):
     name: str = Field(..., min_length=1)
     dependency_type: str = Field(default="relates_to", min_length=1)
+    source_refs: list[str] = Field(default_factory=list)
 
 
 class Story(BaseModel):
     title: str = Field(..., min_length=1)
     story: str = Field(..., min_length=1)
+    source_refs: list[str] = Field(default_factory=list)
     acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
     dependencies: list[Dependency] = Field(default_factory=list)
 

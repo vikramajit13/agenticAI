@@ -55,8 +55,14 @@ async def generate_epics_and_stories(
 ) -> dict[str, object]:
     """Generate epics and story shells from extracted context."""
     extracted = state.extracted_context.model_dump()
-    epics = await llm_service.generate_epics_and_stories(extracted)
-    return {"epics": epics}
+    epics = await llm_service.generate_epics_and_stories(extracted, state.sections)
+    ambiguity_flags = list(state.ambiguity_flags)
+    if any(not story.source_refs for epic in epics for story in epic.stories):
+        ambiguity_flags.append("ungrounded_story_output")
+    return {
+        "epics": epics,
+        "ambiguity_flags": sorted(set(ambiguity_flags)),
+    }
 
 
 async def generate_acceptance_criteria(
@@ -64,7 +70,11 @@ async def generate_acceptance_criteria(
 ) -> dict[str, object]:
     """Attach acceptance criteria to each story."""
     extracted = state.extracted_context.model_dump()
-    epics = await llm_service.generate_acceptance_criteria(state.epics, extracted)
+    epics = await llm_service.generate_acceptance_criteria(
+        state.epics,
+        extracted,
+        state.sections,
+    )
     return {"epics": epics}
 
 
@@ -73,9 +83,18 @@ async def detect_dependencies(state: RequirementsWorkflowState) -> dict[str, obj
     extracted = state.extracted_context.model_dump()
     epics = llm_service.derive_dependencies(state.epics, extracted)
     summary = llm_service.build_summary(extracted, epics)
+    ambiguity_flags = list(state.ambiguity_flags)
+    if any(
+        dependency and not dependency.source_refs
+        for epic in epics
+        for story in epic.stories
+        for dependency in story.dependencies
+    ):
+        ambiguity_flags.append("ungrounded_dependency_output")
     return {
         "epics": epics,
         "summary": summary,
+        "ambiguity_flags": sorted(set(ambiguity_flags)),
     }
 
 
