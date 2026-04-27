@@ -18,6 +18,8 @@ class RequirementsWorkflowState(BaseModel):
     normalized_text: str = ""
     sections: list[str] = Field(default_factory=list)
     extracted_context: ExtractedContext = Field(default_factory=ExtractedContext)
+    completeness_score: float = 0.0
+    ambiguity_flags: list[str] = Field(default_factory=list)
     epics: list[Epic] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)

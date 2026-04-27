@@ -130,9 +130,15 @@ class LLMService:
         self,
         extracted: dict[str, list[str]],
         epics: list[Epic],
+        ambiguity_flags: list[str] | None = None,
+        completeness_score: float = 1.0,
     ) -> dict[str, list[str]]:
         """Quick heuristic open-question pass to avoid another slow LLM call."""
-        result = self._fallback_open_questions(extracted)
+        result = self._fallback_open_questions(
+            extracted,
+            ambiguity_flags=ambiguity_flags or [],
+            completeness_score=completeness_score,
+        )
         if epics and not result["open_questions"]:
             result["open_questions"].append(
                 "Which stories should be prioritized for the first implementation slice?"
@@ -140,6 +146,82 @@ class LLMService:
         return {
             "open_questions": self._clean_text_items(result["open_questions"]),
             "assumptions": self._clean_text_items(result["assumptions"]),
+        }
+
+    def assess_requirement_quality(
+        self,
+        normalized_text: str,
+        extracted: dict[str, list[str]],
+    ) -> dict[str, object]:
+        """Heuristically score requirement completeness and identify ambiguity."""
+        flags: list[str] = []
+        lowered = normalized_text.lower()
+
+        if not extracted.get("actors"):
+            flags.append("missing_business_actor")
+
+        vague_terms = {
+            "fast",
+            "user friendly",
+            "easy to use",
+            "scalable",
+            "secure",
+            "reliable",
+            "efficient",
+        }
+        measurable_terms = {
+            "ms",
+            "second",
+            "minute",
+            "%",
+            "sla",
+            "uptime",
+            "latency",
+            "throughput",
+        }
+        if any(term in lowered for term in vague_terms) and not any(
+            term in lowered for term in measurable_terms
+        ):
+            flags.append("vague_non_functionals")
+
+        integration_terms = {
+            "integrat",
+            "api",
+            "sync",
+            "import",
+            "export",
+            "webhook",
+            "crm",
+            "erp",
+            "record system",
+            "patient record",
+        }
+        if not any(term in lowered for term in integration_terms):
+            flags.append("missing_integrations")
+
+        ownership_terms = {
+            "owner",
+            "ownership",
+            "admin",
+            "manager",
+            "operations",
+            "ops",
+            "team",
+            "support",
+            "reception",
+        }
+        if not any(term in lowered for term in ownership_terms):
+            flags.append("unclear_ownership")
+
+        score = max(0.0, 1.0 - (0.2 * len(flags)))
+        if extracted.get("goals"):
+            score += 0.1
+        if extracted.get("features"):
+            score += 0.1
+
+        return {
+            "completeness_score": round(min(score, 1.0), 2),
+            "ambiguity_flags": self._clean_text_items(flags),
         }
 
     def build_summary(
@@ -361,13 +443,26 @@ class LLMService:
     def _fallback_open_questions(
         self,
         extracted: dict[str, list[str]],
+        ambiguity_flags: list[str] | None = None,
+        completeness_score: float = 1.0,
     ) -> dict[str, list[str]]:
         questions: list[str] = []
         assumptions: list[str] = []
+        active_flags = set(ambiguity_flags or [])
         if not extracted.get("actors"):
             questions.append("Who is the primary user or actor for the first release?")
         if not extracted.get("constraints"):
             questions.append("Are there platform, compliance, or integration constraints?")
+        if "missing_business_actor" in active_flags:
+            questions.append("Which business actor owns the workflow and receives the primary value from this capability?")
+        if "vague_non_functionals" in active_flags:
+            questions.append("Which non-functional requirements need measurable targets such as latency, availability, or security controls?")
+        if "missing_integrations" in active_flags:
+            questions.append("Which external systems, APIs, or internal platforms must this solution integrate with?")
+        if "unclear_ownership" in active_flags:
+            questions.append("Which team or operational owner is responsible for setup, support, and ongoing maintenance?")
+        if completeness_score < 0.75:
+            questions.append("What scope should be deferred if the current requirements are too incomplete for the first release?")
         if extracted.get("features"):
             assumptions.append("The listed features are all in scope for the initial backlog draft.")
         if extracted.get("goals"):
@@ -504,3 +599,4 @@ class LLMService:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+    

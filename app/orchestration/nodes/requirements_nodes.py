@@ -35,6 +35,21 @@ async def extract_context(state: RequirementsWorkflowState) -> dict[str, object]
     return {"extracted_context": ExtractedContext(**extracted)}
 
 
+def assess_requirement_quality(state: RequirementsWorkflowState) -> dict[str, object]:
+    """Score requirement quality and capture ambiguity flags."""
+    return llm_service.assess_requirement_quality(
+        state.normalized_text,
+        state.extracted_context.model_dump(),
+    )
+
+
+def route_after_quality_check(state: RequirementsWorkflowState) -> str:
+    """Route weak requirements to an early question pass."""
+    if state.completeness_score < 0.75 or state.ambiguity_flags:
+        return "weak"
+    return "strong"
+
+
 async def generate_epics_and_stories(
     state: RequirementsWorkflowState,
 ) -> dict[str, object]:
@@ -67,7 +82,12 @@ async def detect_dependencies(state: RequirementsWorkflowState) -> dict[str, obj
 async def find_open_questions(state: RequirementsWorkflowState) -> dict[str, object]:
     """Identify missing information and assumptions from the current draft."""
     extracted = state.extracted_context.model_dump()
-    result = llm_service.derive_open_questions(extracted, state.epics)
+    result = llm_service.derive_open_questions(
+        extracted,
+        state.epics,
+        ambiguity_flags=state.ambiguity_flags,
+        completeness_score=state.completeness_score,
+    )
     return {
         "open_questions": result["open_questions"],
         "assumptions": result["assumptions"],
@@ -85,6 +105,8 @@ def build_fallback_state(raw_text: str) -> RequirementsWorkflowState:
         normalized_text=normalized_text,
         sections=sections,
         extracted_context=extracted,
+        completeness_score=0.0,
+        ambiguity_flags=[],
         epics=epics,
         open_questions=[],
         assumptions=[],

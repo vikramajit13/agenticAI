@@ -52,6 +52,8 @@ async def parse_requirements_endpoint(
     return RequirementsResponse(
         summary=workflow_state.summary,
         extracted=ExtractionSummary(**workflow_state.extracted_context.model_dump()),
+        completeness_score=workflow_state.completeness_score,
+        ambiguity_flags=workflow_state.ambiguity_flags,
         epics=workflow_state.epics,
         open_questions=workflow_state.open_questions,
         assumptions=workflow_state.assumptions,

@@ -22,6 +22,8 @@ class StoryDraft(BaseModel):
 class RequirementsResponse(BaseModel):
     summary: str
     extracted: ExtractionSummary | ExtractedContext
+    completeness_score: float = 0.0
+    ambiguity_flags: list[str] = Field(default_factory=list)
     epics: list[Epic] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
