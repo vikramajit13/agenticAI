@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
 from app.api.routes.requirements import router as requirements_router
+from app.api.routes.requirements import review_router
 from app.config import get_settings
 from app.logging import configure_logging
 from app.logging import get_logger
@@ -16,6 +17,7 @@ logger = get_logger(__name__)
 app = FastAPI(title=settings.app_name)
 app.include_router(health_router)
 app.include_router(requirements_router)
+app.include_router(review_router)
 
 
 @app.on_event("startup")

@@ -5,6 +5,7 @@ from langgraph.graph import START
 from langgraph.graph import StateGraph
 
 from app.orchestration.common.state import RequirementsWorkflowState
+from app.orchestration.common.state import ReviewWorkflowState
 from app.orchestration.nodes import assess_requirement_quality
 from app.orchestration.nodes import detect_dependencies
 from app.orchestration.nodes import extract_context
@@ -12,7 +13,12 @@ from app.orchestration.nodes import find_open_questions
 from app.orchestration.nodes import generate_acceptance_criteria
 from app.orchestration.nodes import generate_epics_and_stories
 from app.orchestration.nodes import ingest_input
+from app.orchestration.nodes import no_review_action
+from app.orchestration.nodes import regenerate_ac_for_story
 from app.orchestration.nodes import route_after_quality_check
+from app.orchestration.nodes import route_after_review_action
+from app.orchestration.nodes import rewrite_story_technically
+from app.orchestration.nodes import split_story_in_two
 
 
 def build_requirements_graph():
@@ -44,3 +50,30 @@ def build_requirements_graph():
 
 
 requirements_graph = build_requirements_graph()
+
+
+def build_review_graph():
+    """Build and compile the review-action graph."""
+    builder = StateGraph(ReviewWorkflowState)
+    builder.add_node("regenerate_ac_for_story", regenerate_ac_for_story)
+    builder.add_node("split_story_in_two", split_story_in_two)
+    builder.add_node("rewrite_story_technically", rewrite_story_technically)
+    builder.add_node("no_review_action", no_review_action)
+    builder.add_conditional_edges(
+        START,
+        route_after_review_action,
+        {
+            "regenerate_ac_for_story": "regenerate_ac_for_story",
+            "split_story_in_two": "split_story_in_two",
+            "rewrite_story_technically": "rewrite_story_technically",
+            "no_review_action": "no_review_action",
+        },
+    )
+    builder.add_edge("regenerate_ac_for_story", END)
+    builder.add_edge("split_story_in_two", END)
+    builder.add_edge("rewrite_story_technically", END)
+    builder.add_edge("no_review_action", END)
+    return builder.compile()
+
+
+review_graph = build_review_graph()

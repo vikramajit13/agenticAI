@@ -3,7 +3,8 @@
 from pydantic import BaseModel
 from pydantic import Field
 
-from app.domain.models import Epic
+from app.domain.models import Epic, Story
+from app.domain.constants import Action
 
 
 class Section(BaseModel):
@@ -30,3 +31,10 @@ class RequirementsWorkflowState(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     summary: str = ""
+
+
+class ReviewWorkflowState(BaseModel):
+    workflow_state: RequirementsWorkflowState
+    action: Action = Field(default=Action.NOACTION)
+    story_title: str = ""
+    instructions: str = ""

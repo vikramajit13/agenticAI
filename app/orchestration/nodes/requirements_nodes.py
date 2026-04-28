@@ -1,13 +1,17 @@
 """LangGraph nodes for the requirements workflow."""
 
 from app.config import get_settings
+from app.domain.models import AcceptanceCriterion
 from app.domain.models import Epic
+from app.domain.models import Story
 from app.logging import get_logger
 from app.orchestration.common.state import ExtractedContext
 from app.orchestration.common.state import RequirementsWorkflowState
+from app.orchestration.common.state import ReviewWorkflowState
 from app.services.llm_service import LLMService
 from app.services.parser import normalize_text
 from app.services.parser import parse_requirements
+from app.domain.constants import Action
 
 
 logger = get_logger(__name__)
@@ -49,6 +53,13 @@ def route_after_quality_check(state: RequirementsWorkflowState) -> str:
         return "weak"
     return "strong"
 
+def route_after_review_action(state: RequirementsWorkflowState) -> str:
+    """Route to appropriate node based on human review action."""
+    if state.action == Action.REGENERATEAC:
+        return "regenerate"
+    # Future actions like SPLITSTORY or TECHNICALSTORY would be handled here
+    return "generate_epics_and_stories"  # Default route if no specific action
+   
 
 async def generate_epics_and_stories(
     state: RequirementsWorkflowState,
@@ -131,3 +142,103 @@ def build_fallback_state(raw_text: str) -> RequirementsWorkflowState:
         assumptions=[],
         summary=llm_service.build_summary(extracted.model_dump(), epics),
     )
+
+
+def route_after_review_action(state: ReviewWorkflowState) -> str:
+    """Route to the appropriate review node."""
+    if state.action == Action.REGENERATEAC:
+        return "regenerate_ac_for_story"
+    if state.action == Action.SPLITSTORY:
+        return "split_story_in_two"
+    if state.action == Action.TECHNICALSTORY:
+        return "rewrite_story_technically"
+    return "no_review_action"
+
+
+async def regenerate_ac_for_story(state: ReviewWorkflowState) -> dict[str, object]:
+    """Regenerate acceptance criteria for a single story."""
+    updated_state = state.workflow_state.model_copy(deep=True)
+    target = _find_story(updated_state, state.story_title)
+    if target is None:
+        return _flag_missing_story(updated_state, state.story_title)
+
+    regenerated = await llm_service.regenerate_acceptance_criteria_for_story(target)
+    _replace_story(updated_state, state.story_title, regenerated)
+    updated_state.summary = f"Regenerated acceptance criteria for story '{state.story_title}'."
+    return {"workflow_state": updated_state}
+
+
+async def split_story_in_two(state: ReviewWorkflowState) -> dict[str, object]:
+    """Split a single story into two smaller stories."""
+    updated_state = state.workflow_state.model_copy(deep=True)
+    target = _find_story(updated_state, state.story_title)
+    if target is None:
+        return _flag_missing_story(updated_state, state.story_title)
+
+    split_stories = await llm_service.split_story_in_two(target, state.instructions)
+    _replace_story_with_many(updated_state, state.story_title, split_stories)
+    updated_state.summary = f"Split story '{state.story_title}' into {len(split_stories)} stories."
+    return {"workflow_state": updated_state}
+
+
+async def rewrite_story_technically(state: ReviewWorkflowState) -> dict[str, object]:
+    """Rewrite a story in a more technical implementation-oriented style."""
+    updated_state = state.workflow_state.model_copy(deep=True)
+    target = _find_story(updated_state, state.story_title)
+    if target is None:
+        return _flag_missing_story(updated_state, state.story_title)
+
+    rewritten = await llm_service.rewrite_story_technically(target, state.instructions)
+    _replace_story(updated_state, state.story_title, rewritten)
+    updated_state.summary = f"Rewrote story '{state.story_title}' technically."
+    return {"workflow_state": updated_state}
+
+
+def no_review_action(state: ReviewWorkflowState) -> dict[str, object]:
+    """Pass the state through unchanged when no action is selected."""
+    return {"workflow_state": state.workflow_state}
+
+
+def _find_story(state: RequirementsWorkflowState, story_title: str) -> Story | None:
+    for epic in state.epics:
+        for story in epic.stories:
+            if story.title == story_title:
+                return story
+    return None
+
+
+def _replace_story(
+    state: RequirementsWorkflowState,
+    story_title: str,
+    replacement: Story,
+) -> None:
+    for epic in state.epics:
+        for index, story in enumerate(epic.stories):
+            if story.title == story_title:
+                epic.stories[index] = replacement
+                return
+
+
+def _replace_story_with_many(
+    state: RequirementsWorkflowState,
+    story_title: str,
+    replacements: list[Story],
+) -> None:
+    for epic in state.epics:
+        for index, story in enumerate(epic.stories):
+            if story.title == story_title:
+                epic.stories[index:index + 1] = replacements
+                return
+
+
+def _flag_missing_story(
+    state: RequirementsWorkflowState,
+    story_title: str,
+) -> dict[str, object]:
+    flags = sorted(set(state.ambiguity_flags + ["review_story_not_found"]))
+    state.ambiguity_flags = flags
+    state.open_questions = list(state.open_questions) + [
+        f"Could not find a story titled '{story_title}' in the prior graph state."
+    ]
+    state.summary = f"Review action could not be applied because story '{story_title}' was not found."
+    return {"workflow_state": state}

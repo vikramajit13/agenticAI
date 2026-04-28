@@ -37,6 +37,20 @@ class ExtractedRequirementsResult(BaseModel):
     constraints: list[dict[str, Any]]
 
 
+class AcceptanceCriteriaRegenerationResult(BaseModel):
+    acceptance_criteria: list[AcceptanceCriterion]
+
+
+class StorySplitResult(BaseModel):
+    stories: list[Story]
+
+
+class StoryRewriteResult(BaseModel):
+    title: str
+    story: str
+    source_refs: list[str]
+
+
 class LLMService:
     """Ollama-backed service for requirements analysis and generation."""
 
@@ -150,6 +164,101 @@ class LLMService:
         except ValidationError:
             logger.warning("Acceptance criteria validation failed, filling criteria heuristically")
             return self._fill_missing_acceptance_criteria(epics)
+
+    async def regenerate_acceptance_criteria_for_story(self, story: Story) -> Story:
+        prompt = (
+            "You regenerate acceptance criteria for a user story based on the story text.\n"
+            "Return strict JSON with exactly one top-level key: acceptance_criteria.\n"
+            "acceptance_criteria must be an array of objects with key: text.\n"
+            "Each acceptance criterion must use Given/When/Then wording.\n"
+            "Return exactly 2 concise acceptance criteria.\n"
+            "Do not include markdown or explanation.\n\n"
+            f"User story:\n{json.dumps(story.model_dump(), ensure_ascii=True)}\n\n"
+            f"JSON schema:\n{json.dumps(AcceptanceCriteriaRegenerationResult.model_json_schema(), ensure_ascii=True)}"
+        )
+        result = await self._generate_json(
+            prompt,
+            format_schema=AcceptanceCriteriaRegenerationResult.model_json_schema(),
+        )
+        try:
+            criteria_result = AcceptanceCriteriaRegenerationResult.model_validate(result)
+            return story.model_copy(
+                update={"acceptance_criteria": criteria_result.acceptance_criteria}
+            )
+        except ValidationError:
+            logger.warning("Acceptance criteria regeneration failed, using fallback criteria")
+            return story.model_copy(
+                update={"acceptance_criteria": self._fallback_criteria(story.story)}
+            )
+
+    async def split_story_in_two(
+        self,
+        story: Story,
+        instructions: str = "",
+    ) -> list[Story]:
+        prompt = (
+            "You split one user story into exactly two smaller stories.\n"
+            "Return strict JSON with exactly one top-level key: stories.\n"
+            "stories must be an array of exactly two story objects with keys: title, story, source_refs, acceptance_criteria, dependencies.\n"
+            "Each story must be in the format 'As a <actor>, I want <goal>, so that <benefit>'.\n"
+            "Preserve valid source_refs from the original story.\n"
+            "Set acceptance_criteria to an empty array and dependencies to an empty array.\n"
+            "Do not include markdown or explanation.\n\n"
+            f"Original story:\n{json.dumps(story.model_dump(), ensure_ascii=True)}\n\n"
+            f"Additional instructions:\n{instructions or 'None'}\n\n"
+            f"JSON schema:\n{json.dumps(StorySplitResult.model_json_schema(), ensure_ascii=True)}"
+        )
+        result = await self._generate_json(
+            prompt,
+            format_schema=StorySplitResult.model_json_schema(),
+        )
+        try:
+            split_result = StorySplitResult.model_validate(result)
+            return [
+                candidate.model_copy(
+                    update={
+                        "source_refs": candidate.source_refs or list(story.source_refs),
+                        "dependencies": [],
+                        "acceptance_criteria": [],
+                    }
+                )
+                for candidate in split_result.stories[:2]
+            ] or self._fallback_split_story(story)
+        except ValidationError:
+            logger.warning("Story split failed, using fallback split")
+            return self._fallback_split_story(story)
+
+    async def rewrite_story_technically(
+        self,
+        story: Story,
+        instructions: str = "",
+    ) -> Story:
+        prompt = (
+            "You rewrite a user story in a more technical, implementation-oriented style.\n"
+            "Return strict JSON with keys: title, story, source_refs.\n"
+            "story must remain a single story sentence and preserve the original intent.\n"
+            "Preserve valid source_refs from the original story.\n"
+            "Do not include markdown or explanation.\n\n"
+            f"Original story:\n{json.dumps(story.model_dump(), ensure_ascii=True)}\n\n"
+            f"Additional instructions:\n{instructions or 'None'}\n\n"
+            f"JSON schema:\n{json.dumps(StoryRewriteResult.model_json_schema(), ensure_ascii=True)}"
+        )
+        result = await self._generate_json(
+            prompt,
+            format_schema=StoryRewriteResult.model_json_schema(),
+        )
+        try:
+            rewrite_result = StoryRewriteResult.model_validate(result)
+            return story.model_copy(
+                update={
+                    "title": rewrite_result.title,
+                    "story": rewrite_result.story,
+                    "source_refs": rewrite_result.source_refs or list(story.source_refs),
+                }
+            )
+        except ValidationError:
+            logger.warning("Technical rewrite failed, returning original story")
+            return story
 
     def derive_dependencies(
         self,
@@ -493,6 +602,26 @@ class LLMService:
                     f"Given the goal '{goal}', when the response is produced, then the story "
                     "aligns with the extracted actors, goals, features, and constraints."
                 )
+            ),
+        ]
+
+    def _fallback_split_story(self, story: Story) -> list[Story]:
+        return [
+            story.model_copy(
+                update={
+                    "title": f"{story.title} Part 1",
+                    "story": story.story,
+                    "acceptance_criteria": [],
+                    "dependencies": [],
+                }
+            ),
+            story.model_copy(
+                update={
+                    "title": f"{story.title} Part 2",
+                    "story": story.story,
+                    "acceptance_criteria": [],
+                    "dependencies": [],
+                }
             ),
         ]
 
